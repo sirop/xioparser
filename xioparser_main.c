@@ -5,7 +5,11 @@
 #include "hal.h"                /* HAL public API decls */
 
 
-#include "Osc99.h"
+//#include "Osc99.h"
+#include "OSC99/OscAddress.h"
+#include "OSC99/OscError.h"
+#include "OSC99/OscPacket.h"
+#include "OSC99/OscSlip.h"
 
 //#include "CBUF.h"
 
@@ -96,7 +100,7 @@ void ProcessPacket(OscPacket* const oscPacket);
 void ProcessMessage(const OscTimeTag* const oscTimeTag, OscMessage* const oscMessage);
 static OscError ProcessQuaternion(const OscTimeTag * const oscTimeTag, OscMessage * const oscMessage);
 static OscError ProcessEuler(const OscTimeTag * const oscTimeTag, OscMessage * const oscMessage);
-static OscError ProcessEuler(const OscTimeTag * const oscTimeTag, OscMessage * const oscMessage);
+static OscError ProcessEarth(const OscTimeTag * const oscTimeTag, OscMessage * const oscMessage);
 
 //static inline void *lcec_zalloc(size_t size);
 //static inline float ieee_float(const uint32_t* uRep); 
@@ -121,8 +125,8 @@ int rtapi_app_main( void)
     }
 	
 	 /* allocate shared memory for madgwick data */
-    xiopaser_data = hal_malloc( sizeof( hal_xioparser_t));
-    if (xiopaser_data == 0) {
+    xioparser_data = hal_malloc( sizeof( hal_xioparser_t));
+    if (xioparser_data == 0) {
         rtapi_print_msg( RTAPI_MSG_ERR, "XIOPARSER: ERROR: hal_malloc(1) failed\n");
         hal_exit( comp_id);
         return -1;
@@ -160,22 +164,27 @@ static void update(void *arg, long period)
 {
 	
 	hal_xioparser_t* m_data = arg;
-	int count = m_data->misrx_ring_counter;
+	int counter = *(m_data->misrx_ringbuf[9]);
 	
 	if ( counter > 0) {
-	    unsigned char* bytes = (unsigned char*) (&m_data->misrx_ringbuf[0]);
-	    int old_i = m_data->misrx_ring_old_i;
+	    //unsigned char* bytes = (unsigned char*) (&m_data->misrx_ringbuf[0]);
+		uint8_t bytes[RINGBUFCAP];
+		
+	    int old_i = *(m_data->misrx_ringbuf[10]);
 		int k;
-		if (old_i + counter < RINGBUFCAP) {
+		for ( k = 0 ; k < RINGBUFCAP/4 ; k++)
+			memcpy(&bytes[k*4], m_data->misrx_ringbuf[k], 4);
+		
+		if (old_i + counter+1 < RINGBUFCAP) {
 			
 			for ( k = old_i ; k <= old_i + counter; k++)
-			    OscSlipDecoderProcessByte(&oscSlipDecoder, bytes[k]);			
+			    OscSlipDecoderProcessByte(&oscSlipDecoder, bytes[k]);
 		}
-		esle {
+		else {
 			for ( k = old_i ; k < RINGBUFCAP; k++)
 		        OscSlipDecoderProcessByte(&oscSlipDecoder, bytes[k]);
 			// Example: ring cap 32, old_i 22, count 10, 
-			for ( k = 0 ; k < (old_i+count) - RINGBUFCAP; k++)
+			for ( k = 0 ; k < (old_i+count+1) - RINGBUFCAP; k++)
 		        OscSlipDecoderProcessByte(&oscSlipDecoder, bytes[k]);
 	    }
 		
@@ -206,19 +215,19 @@ void ProcessMessage(const OscTimeTag* const oscTimeTag, OscMessage* const oscMes
 
   // If message address is "/quaternion" then send our hello message
     if (OscAddressMatch(oscMessage->oscAddressPattern, "/quaternion") == true) {
-       ProcessQuaternion(oscTimeTag, oscMessage)
+       ProcessQuaternion(oscTimeTag, oscMessage);
        return;
     }
 
   // If message address is "/euler" then send our hello message
     if (OscAddressMatch(oscMessage->oscAddressPattern, "/euler") == true) {
-       ProcessEuler(oscTimeTag, oscMessage)
+       ProcessEuler(oscTimeTag, oscMessage);
        return;
     }
 	
 	// If message address is "/earth" then send our hello message
     if (OscAddressMatch(oscMessage->oscAddressPattern, "/earth") == true) {
-       ProcessEarth(oscTimeTag, oscMessage)
+       ProcessEarth(oscTimeTag, oscMessage);
        return;
     }
 
@@ -235,33 +244,42 @@ static OscError ProcessQuaternion(const OscTimeTag * const oscTimeTag, OscMessag
     // Get timestamp
     // NgimuQuaternion ngimuQuaternion;
     //  ngimuQuaternion.timestamp = *oscTimeTag;
+	
+	float temp = 0.0f;
 
     // Get W element
     OscError oscError;
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->w);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
+	
+	*xioparser_data->quatW = (double) temp;
 
     // Get X element
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->x);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
+	
+	*xioparser_data->quatX = (double) temp;
 
     // Get Y element
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->y);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
+	
+	*xioparser_data->quatY = (double) temp;
 
     // Get Z element
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->z);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
 
-   
+    *xioparser_data->quatZ = (double) temp;
+
     return OscErrorNone;
 }
 
@@ -277,26 +295,33 @@ static OscError ProcessEuler(const OscTimeTag * const oscTimeTag, OscMessage * c
     // Get timestamp
     //NgimuEuler ngimuEuler;
    // ngimuEuler.timestamp = *oscTimeTag;
+   
+    float temp = 0.0f;
 
     // Get roll
     OscError oscError;
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->roll);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
+	
+	*xioparser_data->roll = (double) temp;
 
     // Get pitch
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->pitch);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
-
+    
+	
+	*xioparser_data->pitch = (double) temp;
     // Get yaw
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->yaw);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
-
+    
+	*xioparser_data->yaw = (double) temp;
    
     return OscErrorNone;
 }
@@ -307,33 +332,40 @@ static OscError ProcessEuler(const OscTimeTag * const oscTimeTag, OscMessage * c
  * @param oscMessage Address of OSC message.
  * @return Error code (0 if successful).
  */
-static OscError ProcessEuler(const OscTimeTag * const oscTimeTag, OscMessage * const oscMessage) {
+static OscError ProcessEarth(const OscTimeTag * const oscTimeTag, OscMessage * const oscMessage) {
 
 
     // Get timestamp
     //NgimuEuler ngimuEuler;
    // ngimuEuler.timestamp = *oscTimeTag;
+   
+    float temp = 0.0f;
 
     // Get roll
     OscError oscError;
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->gX);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
+	
+	*xioparser_data->gX = (double) temp;
 
     // Get pitch
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->gY);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
+	
+	*xioparser_data->gY = (double) temp;
 
     // Get yaw
-    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &xioparser_data->gZ);
+    oscError = OscMessageGetArgumentAsFloat32(oscMessage, &temp);
     if (oscError != OscErrorNone) {
         return oscError;
     }
 
-   
+    *xioparser_data->gZ = (double) temp;
+
     return OscErrorNone;
 }
 
